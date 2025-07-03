@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+html2text
+langdetect
+openai
+streamlit
+python-dotenv 
