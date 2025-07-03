@@ -38,7 +38,6 @@ if st.button("Analyze and Generate Email"):
                     st.success("Email generated!")
                     st.subheader("Suggested Email")
                     st.code(email, language=None)
-                    st.button("Copy Email", on_click=st.session_state.setdefault, args=("copied", True))
                     if issues:
                         st.markdown("---")
                         st.subheader("Sample Issues Found")
