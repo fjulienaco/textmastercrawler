@@ -7,11 +7,6 @@ import csv
 import random
 import langdetect
 from openai import OpenAI
-from dotenv import load_dotenv
- 
-load_dotenv()
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
  
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -58,7 +53,7 @@ def get_all_links(base_url, max_pages=200):
             pass
     return list(pages)[:max_pages]
  
-def check_linguistic_issues(text, allow_minor=False):
+def check_linguistic_issues(text, api_key, allow_minor=False):
     prompt = f"""You are a senior translation QA specialist reviewing website content. Your task is to extract **exactly 1 example** of a linguistic issue from this content. Your focus should be on **clear, verifiable errors** that a native speaker or reviewer would reasonably flag.
  
 Only include examples if they fall into these priority categories:
@@ -86,6 +81,7 @@ Text:
 {text[:5000]}"""
  
     try:
+        client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -131,7 +127,7 @@ Here are a few examples:
 {outro}"""
     return email
  
-def analyze_domain(domain: str):
+def analyze_domain(domain: str, api_key: str):
     base_url = f"https://{domain}" if not domain.startswith("http") else domain
     links = get_all_links(base_url, max_pages=200)
     total_errors = 0
@@ -142,7 +138,7 @@ def analyze_domain(domain: str):
         content = get_page_text(url)
         lang = detect_lang(content)
         if content and len(content) > 500:
-            issues = check_linguistic_issues(content)
+            issues = check_linguistic_issues(content, api_key)
             if issues and "Original sentence:" in issues and "extra space" not in issues.lower() and "punctuation" not in issues.lower():
                 formatted = f"{issues}\nURL: {url}\nLanguage: {lang.upper()}"
                 collected_issues.append(formatted)
@@ -157,7 +153,7 @@ def analyze_domain(domain: str):
             content = get_page_text(url)
             lang = detect_lang(content)
             if content and len(content) > 500:
-                issues = check_linguistic_issues(content, allow_minor=True)
+                issues = check_linguistic_issues(content, api_key, allow_minor=True)
                 if issues and "Original sentence:" in issues:
                     formatted = f"{issues}\nURL: {url}\nLanguage: {lang.upper()}"
                     collected_issues.append(formatted)
@@ -180,5 +176,5 @@ if __name__ == "__main__":
         domains = [line.strip() for line in f if line.strip()]
     for domain in domains:
         print(f"\n🔍 Analyse de : {domain}")
-        email, _ = analyze_domain(domain)
+        email, _ = analyze_domain(domain, "your_api_key_here")
         print(f"✅ Email généré pour {domain}")
