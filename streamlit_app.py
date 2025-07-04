@@ -16,7 +16,7 @@ def get_openai_api_key():
     return os.getenv("OPENAI_API_KEY")
 
 st.set_page_config(page_title="Linguistic QA Email Generator", page_icon="📧", layout="centered")
-st.title("📧 Linguistic QA Email Generator")
+st.markdown('<h1 style="color: red;">📧 Linguistic QA Email Generator</h1>', unsafe_allow_html=True)
 st.write("""
 Enter a website URL below. The app will review a few pages, find linguistic issues, and generate a suggested outreach email you can quickly copy.
 """)
