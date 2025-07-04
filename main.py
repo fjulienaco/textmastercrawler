@@ -7,6 +7,9 @@ import csv
 import random
 import langdetect
 from openai import OpenAI
+import logging
+ 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
  
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -19,6 +22,7 @@ def detect_lang(text):
         return "unknown"
  
 def get_page_text(url):
+    logging.info(f"Fetching page text for URL: {url}")
     try:
         response = requests.get(url, headers=HEADERS, timeout=12)
         if response.status_code == 200:
@@ -27,11 +31,14 @@ def get_page_text(url):
                 tag.decompose()
             text = soup.get_text(separator=' ')
             return html2text.html2text(text)
-    except:
-        pass
+        else:
+            logging.warning(f"Non-200 status code {response.status_code} for URL: {url}")
+    except Exception as e:
+        logging.error(f"Error fetching {url}: {e}")
     return ""
  
 def get_all_links(base_url, max_pages=200):
+    logging.info(f"Getting all links from base URL: {base_url}")
     langs = ["", "/en", "/fr", "/nl", "/it", "/de", "/es"]
     pages = set()
     for lang in langs:
@@ -49,11 +56,13 @@ def get_all_links(base_url, max_pages=200):
                     pages.add(href)
                 if len(pages) >= max_pages:
                     break
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Error getting links from {full_url}: {e}")
+    logging.info(f"Found {len(pages)} pages from {base_url}")
     return list(pages)[:max_pages]
  
 def check_linguistic_issues(text, api_key, allow_minor=False):
+    logging.info(f"Checking linguistic issues (allow_minor={allow_minor}) on text of length {len(text)}")
     prompt = f"""You are a senior translation QA specialist reviewing website content. Your task is to extract **exactly 1 example** of a linguistic issue from this content. Your focus should be on **clear, verifiable errors** that a native speaker or reviewer would reasonably flag.
  
 Only include examples if they fall into these priority categories:
@@ -90,8 +99,10 @@ Text:
             ],
             temperature=0.3
         )
+        logging.info("OpenAI API call successful.")
         return response.choices[0].message.content.strip()
     except Exception as e:
+        logging.error(f"OpenAI API error: {e}")
         return ""
  
 def estimate_total_pages():
@@ -128,6 +139,7 @@ Here are a few examples:
     return email
  
 def analyze_domain(domain: str, api_key: str):
+    logging.info(f"Starting analysis for domain: {domain}")
     base_url = f"https://{domain}" if not domain.startswith("http") else domain
     links = get_all_links(base_url, max_pages=200)
     total_errors = 0
@@ -135,6 +147,7 @@ def analyze_domain(domain: str, api_key: str):
     pages_used = 0
 
     for url in links:
+        logging.info(f"Analyzing URL: {url}")
         content = get_page_text(url)
         lang = detect_lang(content)
         if content and len(content) > 500:
@@ -144,11 +157,15 @@ def analyze_domain(domain: str, api_key: str):
                 collected_issues.append(formatted)
                 total_errors += 1
                 pages_used += 1
+                logging.info(f"Issue found on {url}")
             if len(collected_issues) >= 3:
                 break
             time.sleep(1)
+        else:
+            logging.info(f"Skipping URL due to insufficient content or empty: {url}")
 
     if len(collected_issues) < 3:
+        logging.info("Trying to find minor issues...")
         for url in links:
             content = get_page_text(url)
             lang = detect_lang(content)
@@ -159,15 +176,20 @@ def analyze_domain(domain: str, api_key: str):
                     collected_issues.append(formatted)
                     total_errors += 1
                     pages_used += 1
+                    logging.info(f"Minor issue found on {url}")
                 if len(collected_issues) >= 3:
                     break
                 time.sleep(1)
+            else:
+                logging.info(f"Skipping URL due to insufficient content or empty: {url}")
 
     if collected_issues:
         examples = "\n\n".join(collected_issues)
         email = generate_email(domain, examples, total_errors, pages_used, estimate_total_pages())
+        logging.info(f"Generated email for {domain}")
     else:
         email = f"After a brief review of {domain}, we didn't find any obvious linguistic mistakes. If you'd like us to look deeper or provide guidance, we'd be happy to assist."
+        logging.info(f"No issues found for {domain}")
 
     return email, collected_issues
 

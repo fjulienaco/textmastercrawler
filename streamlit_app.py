@@ -2,9 +2,12 @@ import streamlit as st
 import os
 from dotenv import load_dotenv
 from main import analyze_domain
+import logging
 
 # Load .env if running locally
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 def get_openai_api_key():
     # Try Streamlit secrets first, but handle missing secrets.toml gracefully
@@ -22,10 +25,13 @@ Enter a website URL below. The app will review a few pages, find linguistic issu
 """)
 
 url = st.text_input("Website URL (e.g. example.com or https://example.com)")
+logging.info(f"User input URL: {url}")
 
 if st.button("Analyze and Generate Email"):
+    logging.info("Analyze and Generate Email button clicked.")
     if not url.strip():
         st.error("Please enter a website URL.")
+        logging.error("No URL entered by user.")
     else:
         with st.spinner("Analyzing website and generating email..."):
             try:
@@ -33,7 +39,9 @@ if st.button("Analyze and Generate Email"):
                 api_key = get_openai_api_key()
                 if not api_key:
                     st.error("No OpenAI API key found in st.secrets or .env!")
+                    logging.error("No OpenAI API key found.")
                 else:
+                    logging.info(f"Calling analyze_domain for domain: {domain}")
                     email, issues = analyze_domain(domain, api_key)
                     st.success("Email generated!")
                     st.subheader("Suggested Email")
@@ -49,4 +57,5 @@ if st.button("Analyze and Generate Email"):
                     else:
                         st.info("No major linguistic issues found.")
             except Exception as e:
-                st.error(f"An error occurred: {e}") 
+                st.error(f"An error occurred: {e}")
+                logging.error(f"Exception in Streamlit app: {e}") 
