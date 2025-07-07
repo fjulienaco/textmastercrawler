@@ -61,34 +61,33 @@ def get_all_links(base_url, max_pages=200):
     logging.info(f"Found {len(pages)} pages from {base_url}")
     return list(pages)[:max_pages]
  
-def check_linguistic_issues(text, api_key, allow_minor=False):
+def check_linguistic_issues(text, existing_sentences, api_key, allow_minor=False):
     logging.info(f"Checking linguistic issues (allow_minor={allow_minor}) on text of length {len(text)}")
     prompt = f"""You are a senior translation QA specialist reviewing website content. Your task is to extract **exactly 1 example** of a linguistic issue from this content. Your focus should be on **clear, verifiable errors** that a native speaker or reviewer would reasonably flag.
- 
-Only include examples if they fall into these priority categories:
+
+Only include examples if they fall into these categories:
 - Mistranslations
-- Awkward phrasing
-- Unnatural expressions
 - Grammar issues
+- Unnatural expressions
 - Incorrect word choice
- 
-Avoid flagging issues related to:
-- Punctuation only (e.g., missing quotes, commas, periods)
-- Extra spaces
-- Truncated or incomplete phrases unless clearly visible and wrong in full context
- 
-⚠️ You may include punctuation or spacing issues ONLY if no better errors exist in the entire input.
- 
+
+Avoid:
+- Issues about punctuation or spacing unless no other issues exist
+- Multiple errors from the same sentence, even across different pages
+- False positives (acceptable phrasing or domain/product-specific terms)
+
+\u26a0\ufe0f You may include punctuation or spacing issues ONLY if no better errors exist in the full input.
+
 Response format:
 - Original sentence: "..."
 - Issue: [Short explanation]
 - Suggested correction: "..."
- 
+
 If no issue is found, return an empty string.
- 
+
 Text:
 {text[:5000]}"""
- 
+
     try:
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
@@ -99,12 +98,14 @@ Text:
             ],
             temperature=0.3
         )
-        logging.info("OpenAI API call successful.")
-        return response.choices[0].message.content.strip()
+        result = response.choices[0].message.content.strip()
+        if any(orig in result for orig in existing_sentences):
+            return ""
+        return result
     except Exception as e:
         logging.error(f"OpenAI API error: {e}")
         return ""
- 
+
 def estimate_total_pages():
     return 1000
  
@@ -145,38 +146,45 @@ def analyze_domain(domain: str, api_key: str):
     total_errors = 0
     collected_issues = []
     pages_used = 0
+    used_sentences = set()
 
+    # First pass: look for major issues
     for url in links:
         logging.info(f"Analyzing URL: {url}")
         content = get_page_text(url)
         lang = detect_lang(content)
         if content and len(content) > 500:
-            issues = check_linguistic_issues(content, api_key)
-            if issues and "Original sentence:" in issues and "extra space" not in issues.lower() and "punctuation" not in issues.lower():
-                formatted = f"{issues}\nURL: {url}\nLanguage: {lang.upper()}"
-                collected_issues.append(formatted)
-                total_errors += 1
-                pages_used += 1
-                logging.info(f"Issue found on {url}")
+            issue = check_linguistic_issues(content, used_sentences, api_key)
+            if issue and "Original sentence:" in issue:
+                sentence_line = issue.split("\n")[0]
+                if sentence_line not in used_sentences:
+                    formatted = f"{issue}\nURL: {url}\nLanguage: {lang.upper()}"
+                    collected_issues.append(formatted)
+                    used_sentences.add(sentence_line)
+                    total_errors += 1
+                    pages_used += 1
             if len(collected_issues) >= 3:
                 break
             time.sleep(1)
         else:
             logging.info(f"Skipping URL due to insufficient content or empty: {url}")
 
+    # Second pass: allow minor issues if not enough found
     if len(collected_issues) < 3:
         logging.info("Trying to find minor issues...")
         for url in links:
             content = get_page_text(url)
             lang = detect_lang(content)
             if content and len(content) > 500:
-                issues = check_linguistic_issues(content, api_key, allow_minor=True)
-                if issues and "Original sentence:" in issues:
-                    formatted = f"{issues}\nURL: {url}\nLanguage: {lang.upper()}"
-                    collected_issues.append(formatted)
-                    total_errors += 1
-                    pages_used += 1
-                    logging.info(f"Minor issue found on {url}")
+                issue = check_linguistic_issues(content, used_sentences, api_key, allow_minor=True)
+                if issue and "Original sentence:" in issue:
+                    sentence_line = issue.split("\n")[0]
+                    if sentence_line not in used_sentences:
+                        formatted = f"{issue}\nURL: {url}\nLanguage: {lang.upper()}"
+                        collected_issues.append(formatted)
+                        used_sentences.add(sentence_line)
+                        total_errors += 1
+                        pages_used += 1
                 if len(collected_issues) >= 3:
                     break
                 time.sleep(1)
@@ -188,7 +196,7 @@ def analyze_domain(domain: str, api_key: str):
         email = generate_email(domain, examples, total_errors, pages_used, estimate_total_pages())
         logging.info(f"Generated email for {domain}")
     else:
-        email = f"After a brief review of {domain}, we didn't find any obvious linguistic mistakes. If you'd like us to look deeper or provide guidance, we'd be happy to assist."
+        email = f"After a review of {domain}, no clear linguistic issues were identified. We'd be happy to run a deeper audit if needed."
         logging.info(f"No issues found for {domain}")
 
     return email, collected_issues
