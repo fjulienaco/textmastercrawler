@@ -163,14 +163,14 @@ def analyze_domain(domain: str, api_key: str):
                     used_sentences.add(sentence_line)
                     total_errors += 1
                     pages_used += 1
-            if len(collected_issues) >= 3:
+            if len(collected_issues) >= 5:
                 break
             time.sleep(1)
         else:
             logging.info(f"Skipping URL due to insufficient content or empty: {url}")
 
     # Second pass: allow minor issues if not enough found
-    if len(collected_issues) < 3:
+    if len(collected_issues) < 5:
         logging.info("Trying to find minor issues...")
         for url in links:
             content = get_page_text(url)
@@ -185,7 +185,7 @@ def analyze_domain(domain: str, api_key: str):
                         used_sentences.add(sentence_line)
                         total_errors += 1
                         pages_used += 1
-                if len(collected_issues) >= 3:
+                if len(collected_issues) >= 5:
                     break
                 time.sleep(1)
             else:
