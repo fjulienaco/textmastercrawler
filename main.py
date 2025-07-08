@@ -41,10 +41,10 @@ def get_page_text(url):
         logging.error(f"Error fetching {url}: {e}")
     return ""
  
-def get_all_links(base_url, max_pages=200, allowed_languages=None):
+def get_all_links(base_url, max_pages=200, allowed_languages=None, tld_mode=False):
     logging.info(f"Getting all links from base URL: {base_url}")
     # Use allowed_languages to build language variants
-    if allowed_languages:
+    if allowed_languages and not tld_mode:
         langs = [""] + [f"/{code}" for code in allowed_languages if code != ""]
     else:
         langs = [""]
@@ -71,16 +71,15 @@ def get_all_links(base_url, max_pages=200, allowed_languages=None):
                     continue
                 if candidate_url in checked_links:
                     continue
-                # Only add candidate_url if it matches allowed language paths
-                if allowed_languages:
-                    # Accept root (no lang) or any allowed lang path
+                # Only add candidate_url if it matches allowed language paths (for .com)
+                if allowed_languages and not tld_mode:
                     parsed_candidate = urlparse(candidate_url)
                     path = parsed_candidate.path
                     if not (path == "/" or any(path.startswith(f"/{code}") for code in allowed_languages if code)):
                         continue
                 checked_links.add(candidate_url)
-                # Fetch and check language if filtering is enabled
-                if allowed_languages is not None:
+                # Fetch and check language if filtering is enabled and not tld_mode
+                if allowed_languages is not None and not tld_mode:
                     page_text = get_page_text(candidate_url)
                     lang_code = detect_lang(page_text)
                     if lang_code not in allowed_languages:
@@ -92,7 +91,7 @@ def get_all_links(base_url, max_pages=200, allowed_languages=None):
                 break
         except Exception as e:
             logging.error(f"Error getting links from {full_url}: {e}")
-    logging.info(f"Found {len(pages)} pages from {base_url} matching allowed_languages={allowed_languages}")
+    logging.info(f"Found {len(pages)} pages from {base_url} matching allowed_languages={allowed_languages} tld_mode={tld_mode}")
     return list(pages)[:max_pages]
  
 def check_linguistic_issues(text, existing_sentences, api_key, allow_minor=False, prompt_template=None):
@@ -176,6 +175,10 @@ def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_lang
     parsed = urlparse(base_url)
     root_url = f"{parsed.scheme}://{parsed.netloc}"
 
+    # Determine TLD mode
+    tld = parsed.netloc.split('.')[-1].lower()
+    tld_mode = tld != 'com'
+
     # Try to fetch and parse robots.txt, ignoring SSL verification
     robots_url = root_url.rstrip("/") + "/robots.txt"
     logging.info(f"Attempting to fetch robots.txt from: {robots_url}")
@@ -213,7 +216,7 @@ def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_lang
                         domain_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
                         allowed_domains.add(domain_url)
             # Use allowed_languages from the UI instead of hardcoded langs
-            if allowed_languages:
+            if allowed_languages and not tld_mode:
                 langs = [""] + [f"/{code}" for code in allowed_languages if code != ""]
             else:
                 langs = [""]
@@ -257,7 +260,7 @@ def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_lang
     else:
         per_base_limit = max_total_pages
     for crawl_url in base_urls_to_crawl:
-        new_links = get_all_links(crawl_url, max_pages=per_base_limit, allowed_languages=allowed_languages)
+        new_links = get_all_links(crawl_url, max_pages=per_base_limit, allowed_languages=allowed_languages, tld_mode=tld_mode)
         links.update(new_links)
     links = list(links)
     total_errors = 0
@@ -270,7 +273,7 @@ def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_lang
         logging.info(f"Analyzing URL: {url}")
         content = get_page_text(url)
         lang = detect_lang(content)
-        if allowed_languages is not None and lang not in allowed_languages:
+        if allowed_languages is not None and not tld_mode and lang not in allowed_languages:
             logging.info(f"Skipping URL due to language '{lang}' not in allowed_languages: {allowed_languages}")
             continue
         if content and len(content) > 500:
@@ -295,7 +298,7 @@ def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_lang
         for url in links:
             content = get_page_text(url)
             lang = detect_lang(content)
-            if allowed_languages is not None and lang not in allowed_languages:
+            if allowed_languages is not None and not tld_mode and lang not in allowed_languages:
                 logging.info(f"Skipping URL due to language '{lang}' not in allowed_languages: {allowed_languages}")
                 continue
             if content and len(content) > 500:
