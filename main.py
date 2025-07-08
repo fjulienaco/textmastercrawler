@@ -43,7 +43,12 @@ def get_page_text(url):
  
 def get_all_links(base_url, max_pages=200, allowed_languages=None):
     logging.info(f"Getting all links from base URL: {base_url}")
-    langs = ["", "/en", "/fr", "/nl", "/it", "/de", "/es"]
+    # Use allowed_languages to build language variants
+    if allowed_languages:
+        langs = [""] + [f"/{code}" for code in allowed_languages if code != ""]
+    else:
+        langs = [""]
+    logging.info(f"Language variants considered for link crawling: {langs}")
     pages = set()
     checked_links = set()
     parsed = urlparse(base_url)
@@ -66,6 +71,13 @@ def get_all_links(base_url, max_pages=200, allowed_languages=None):
                     continue
                 if candidate_url in checked_links:
                     continue
+                # Only add candidate_url if it matches allowed language paths
+                if allowed_languages:
+                    # Accept root (no lang) or any allowed lang path
+                    parsed_candidate = urlparse(candidate_url)
+                    path = parsed_candidate.path
+                    if not (path == "/" or any(path.startswith(f"/{code}") for code in allowed_languages if code)):
+                        continue
                 checked_links.add(candidate_url)
                 # Fetch and check language if filtering is enabled
                 if allowed_languages is not None:
@@ -200,14 +212,19 @@ def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_lang
                         parsed_url = urlparse(value)
                         domain_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
                         allowed_domains.add(domain_url)
-            # Optionally, also add language variants for the current root domain
-            langs = ["", "/en", "/fr", "/nl", "/it", "/de", "/es"]
+            # Use allowed_languages from the UI instead of hardcoded langs
+            if allowed_languages:
+                langs = [""] + [f"/{code}" for code in allowed_languages if code != ""]
+            else:
+                langs = [""]
+            logging.info(f"Language variants considered for robots.txt enlargement: {langs}")
             for lang in langs:
                 test_url = urljoin(root_url + "/", lang.lstrip("/"))
                 if rp.can_fetch("*", test_url):
                     parsed_url = urlparse(test_url)
                     domain_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
                     allowed_domains.add(domain_url)
+                    logging.info(f"Added allowed domain from robots.txt/lang variant: {domain_url} (lang path: '{lang}')")
             # Deduplicate base domains, treating www and non-www as the same domain (prefer non-www)
             normalized_domains = {}
             for domain_url in allowed_domains:
@@ -308,9 +325,5 @@ def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_lang
     return email, collected_issues
 
 if __name__ == "__main__":
-    with open("test_sites.txt", "r", encoding="utf-8") as f:
-        domains = [line.strip() for line in f if line.strip()]
-    for domain in domains:
-        print(f"\n🔍 Analyse de : {domain}")
-        email, _ = analyze_domain(domain, "your_api_key_here")
-        print(f"✅ Email généré pour {domain}")
+    # Entry point intentionally left blank; domain input is now handled via the UI.
+    pass
