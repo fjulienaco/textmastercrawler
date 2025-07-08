@@ -8,6 +8,10 @@ import random
 import langdetect
 from openai import OpenAI
 import logging
+import urllib.robotparser
+import urllib.request
+import ssl
+from urllib.parse import urljoin, urlparse
  
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
  
@@ -37,12 +41,15 @@ def get_page_text(url):
         logging.error(f"Error fetching {url}: {e}")
     return ""
  
-def get_all_links(base_url, max_pages=200):
+def get_all_links(base_url, max_pages=200, allowed_languages=None):
     logging.info(f"Getting all links from base URL: {base_url}")
     langs = ["", "/en", "/fr", "/nl", "/it", "/de", "/es"]
     pages = set()
+    checked_links = set()
+    parsed = urlparse(base_url)
+    root_url = f"{parsed.scheme}://{parsed.netloc}"
     for lang in langs:
-        full_url = base_url + lang
+        full_url = urljoin(root_url + "/", lang.lstrip("/"))
         try:
             response = requests.get(full_url, headers=HEADERS, timeout=12)
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -50,44 +57,55 @@ def get_all_links(base_url, max_pages=200):
                 href = a_tag['href']
                 if any(x in href for x in [".jpg", ".png", ".css", ".js", "#", "tel:", "mailto:"]):
                     continue
+                candidate_url = None
                 if href.startswith("/"):
-                    pages.add(base_url + href)
-                elif href.startswith("http") and base_url in href:
-                    pages.add(href)
+                    candidate_url = urljoin(root_url + "/", href.lstrip("/"))
+                elif href.startswith("http") and root_url in href:
+                    candidate_url = href
+                else:
+                    continue
+                if candidate_url in checked_links:
+                    continue
+                checked_links.add(candidate_url)
+                # Fetch and check language if filtering is enabled
+                if allowed_languages is not None:
+                    page_text = get_page_text(candidate_url)
+                    lang_code = detect_lang(page_text)
+                    if lang_code not in allowed_languages:
+                        continue
+                pages.add(candidate_url)
                 if len(pages) >= max_pages:
                     break
+            if len(pages) >= max_pages:
+                break
         except Exception as e:
             logging.error(f"Error getting links from {full_url}: {e}")
-    logging.info(f"Found {len(pages)} pages from {base_url}")
+    logging.info(f"Found {len(pages)} pages from {base_url} matching allowed_languages={allowed_languages}")
     return list(pages)[:max_pages]
  
-def check_linguistic_issues(text, existing_sentences, api_key, allow_minor=False):
+def check_linguistic_issues(text, existing_sentences, api_key, allow_minor=False, prompt_template=None):
     logging.info(f"Checking linguistic issues (allow_minor={allow_minor}) on text of length {len(text)}")
-    prompt = f"""You are a senior translation QA specialist reviewing website content. Your task is to extract **exactly 1 example** of a linguistic issue from this content. Your focus should be on **clear, verifiable errors** that a native speaker or reviewer would reasonably flag.
-
-Only include examples if they fall into these categories:
-- Mistranslations
-- Grammar issues
-- Unnatural expressions
-- Incorrect word choice
-
-Avoid:
-- Issues about punctuation or spacing unless no other issues exist
-- Multiple errors from the same sentence, even across different pages
-- False positives (acceptable phrasing or domain/product-specific terms)
-
-\u26a0\ufe0f You may include punctuation or spacing issues ONLY if no better errors exist in the full input.
-
-Response format:
-- Original sentence: "..."
-- Issue: [Short explanation]
-- Suggested correction: "..."
-
-If no issue is found, return an empty string.
-
-Text:
-{text[:5000]}"""
-
+    if prompt_template is None:
+        prompt_template = (
+            "You are a senior translation QA specialist reviewing website content. Your task is to extract **exactly 1 example** of a linguistic issue from this content. Your focus should be on **clear, verifiable errors** that a native speaker or reviewer would reasonably flag.\n\n"
+            "Only include examples if they fall into these categories:\n"
+            "- Mistranslations\n"
+            "- Grammar issues\n"
+            "- Unnatural expressions\n"
+            "- Incorrect word choice\n\n"
+            "Avoid:\n"
+            "- Issues about punctuation or spacing unless no other issues exist\n"
+            "- Multiple errors from the same sentence, even across different pages\n"
+            "- False positives (acceptable phrasing or domain/product-specific terms)\n\n"
+            "\u26a0\ufe0f You may include punctuation or spacing issues ONLY if no better errors exist in the full input.\n\n"
+            "Response format:\n"
+            "- Original sentence: \"...\"\n"
+            "- Issue: [Short explanation]\n"
+            "- Suggested correction: \"...\"\n\n"
+            "If no issue is found, return an empty string.\n\n"
+            "Text:\n{text}"  # {text} will be replaced below
+        )
+    prompt = prompt_template.format(text=text[:5000])
     try:
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
@@ -139,10 +157,92 @@ Here are a few examples:
 {outro}"""
     return email
  
-def analyze_domain(domain: str, api_key: str):
+def analyze_domain(domain: str, api_key: str, prompt_template=None, allowed_languages=None, use_robots_enlargement=False):
     logging.info(f"Starting analysis for domain: {domain}")
     base_url = f"https://{domain}" if not domain.startswith("http") else domain
-    links = get_all_links(base_url, max_pages=200)
+    from urllib.parse import urlparse, urljoin
+    parsed = urlparse(base_url)
+    root_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    # Try to fetch and parse robots.txt, ignoring SSL verification
+    robots_url = root_url.rstrip("/") + "/robots.txt"
+    logging.info(f"Attempting to fetch robots.txt from: {robots_url}")
+    rp = urllib.robotparser.RobotFileParser()
+    def fetch_robots_txt(url):
+        context = ssl._create_unverified_context()
+        try:
+            with urllib.request.urlopen(url, context=context) as response:
+                logging.info(f"Successfully fetched robots.txt from: {url}")
+                return response.read().decode('utf-8')
+        except Exception as e:
+            logging.warning(f"Could not fetch robots.txt: {e}")
+            return None
+
+    base_urls_to_crawl = [root_url]
+    if use_robots_enlargement:
+        robots_txt = fetch_robots_txt(robots_url)
+        if robots_txt:
+            logging.info(f"Parsing robots.txt for allowed paths.")
+            rp.parse(robots_txt.splitlines())
+            allowed_domains = set()
+            # Always add the current root domain
+            allowed_domains.add(root_url)
+            # Parse robots.txt for any full URLs in Sitemap, Allow, or Disallow rules
+            for line in robots_txt.splitlines():
+                line = line.strip()
+                if (
+                    line.lower().startswith('allow:') or
+                    line.lower().startswith('disallow:') or
+                    line.lower().startswith('sitemap:')
+                ):
+                    value = line.split(':', 1)[1].strip()
+                    if value.startswith('http://') or value.startswith('https://'):
+                        parsed_url = urlparse(value)
+                        domain_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                        allowed_domains.add(domain_url)
+            # Optionally, also add language variants for the current root domain
+            langs = ["", "/en", "/fr", "/nl", "/it", "/de", "/es"]
+            for lang in langs:
+                test_url = urljoin(root_url + "/", lang.lstrip("/"))
+                if rp.can_fetch("*", test_url):
+                    parsed_url = urlparse(test_url)
+                    domain_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                    allowed_domains.add(domain_url)
+            # Deduplicate base domains, treating www and non-www as the same domain (prefer non-www)
+            normalized_domains = {}
+            for domain_url in allowed_domains:
+                parsed = urlparse(domain_url)
+                netloc = parsed.netloc.lower()
+                # Remove www. for normalization
+                if netloc.startswith('www.'):
+                    netloc_naked = netloc[4:]
+                else:
+                    netloc_naked = netloc
+                # Always prefer non-www if both exist
+                if netloc_naked not in normalized_domains or not netloc.startswith('www.'):
+                    normalized_domains[netloc_naked] = f"{parsed.scheme}://{netloc_naked}"
+            base_urls_to_crawl = list(normalized_domains.values())
+            if base_urls_to_crawl:
+                logging.info(f"Allowed base domains from robots.txt: {base_urls_to_crawl}")
+            else:
+                logging.info(f"No allowed base domains found in robots.txt, falling back to default base_url.")
+                base_urls_to_crawl = [root_url]
+        else:
+            logging.warning("robots.txt not found or could not be fetched. Falling back to default logic.")
+            base_urls_to_crawl = [root_url]
+
+    # Aggregate links from all allowed base URLs, splitting the limit equally
+    links = set()
+    max_total_pages = 200
+    num_bases = len(base_urls_to_crawl)
+    if num_bases > 0:
+        per_base_limit = max(1, max_total_pages // num_bases)
+    else:
+        per_base_limit = max_total_pages
+    for crawl_url in base_urls_to_crawl:
+        new_links = get_all_links(crawl_url, max_pages=per_base_limit, allowed_languages=allowed_languages)
+        links.update(new_links)
+    links = list(links)
     total_errors = 0
     collected_issues = []
     pages_used = 0
@@ -153,8 +253,11 @@ def analyze_domain(domain: str, api_key: str):
         logging.info(f"Analyzing URL: {url}")
         content = get_page_text(url)
         lang = detect_lang(content)
+        if allowed_languages is not None and lang not in allowed_languages:
+            logging.info(f"Skipping URL due to language '{lang}' not in allowed_languages: {allowed_languages}")
+            continue
         if content and len(content) > 500:
-            issue = check_linguistic_issues(content, used_sentences, api_key)
+            issue = check_linguistic_issues(content, used_sentences, api_key, prompt_template=prompt_template)
             if issue and "Original sentence:" in issue:
                 sentence_line = issue.split("\n")[0]
                 if sentence_line not in used_sentences:
@@ -175,8 +278,11 @@ def analyze_domain(domain: str, api_key: str):
         for url in links:
             content = get_page_text(url)
             lang = detect_lang(content)
+            if allowed_languages is not None and lang not in allowed_languages:
+                logging.info(f"Skipping URL due to language '{lang}' not in allowed_languages: {allowed_languages}")
+                continue
             if content and len(content) > 500:
-                issue = check_linguistic_issues(content, used_sentences, api_key, allow_minor=True)
+                issue = check_linguistic_issues(content, used_sentences, api_key, allow_minor=True, prompt_template=prompt_template)
                 if issue and "Original sentence:" in issue:
                     sentence_line = issue.split("\n")[0]
                     if sentence_line not in used_sentences:
